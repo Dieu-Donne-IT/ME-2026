@@ -147,6 +147,8 @@ ulong ComputeVisualSignature()
    sig = ((sig << 5) + sig) ^ (ulong)ShowHLHHLHLLLabels;
    sig = ((sig << 5) + sig) ^ (ulong)EnableInternalStructure;
    sig = ((sig << 5) + sig) ^ (ulong)ShowInternalStructure;
+   sig = ((sig << 5) + sig) ^ (ulong)ShowBreakoutLines;
+   sig = ((sig << 5) + sig) ^ (ulong)Internal_ShowBreakoutLines;
    return sig;
 }
 
@@ -327,7 +329,7 @@ void NormalizeStructurePoints(SMarketStructure &structure)
    {
       SZigZagPoint current = structure.points[i];
       int normCount = ArraySize(normalized);
-      SZigZagPoint &last = normalized[normCount - 1];
+      SZigZagPoint last = normalized[normCount - 1];  // FIXED: Removed & reference
 
       if(current.isHigh == last.isHigh)
       {
@@ -554,6 +556,43 @@ void DetectBreakouts(const datetime &series_time[], const double &series_high[],
 }
 
 //+------------------------------------------------------------------+
+//| DRAW BREAKOUT LINES                                              |
+//+------------------------------------------------------------------+
+
+void DrawBreakoutLines(SBreakoutInfo &breakouts[], SMarketStructure &structure, string prefix, 
+                       color lineColor, ENUM_LINE_STYLE lineStyle, int lineWidth)
+{
+   int n = ArraySize(breakouts);
+   for(int i = 0; i < n; i++)
+   {
+      int pIndex = breakouts[i].pointIndex;
+      if(pIndex < 0 || pIndex >= ArraySize(structure.points)) continue;
+
+      string nameLine = prefix + "Breakout_" + IntegerToString(i);
+      datetime tA = breakouts[i].pointA_time;
+      double pA = breakouts[i].pointA_price;
+      datetime tB = breakouts[i].pointB_time;
+
+      if(ObjectFind(0, nameLine) == -1)
+      {
+         ObjectCreate(0, nameLine, OBJ_TREND, 0, tA, pA, tB, pA);
+         ObjectSetInteger(0, nameLine, OBJPROP_COLOR, lineColor);
+         ObjectSetInteger(0, nameLine, OBJPROP_STYLE, lineStyle);
+         ObjectSetInteger(0, nameLine, OBJPROP_WIDTH, lineWidth);
+         ObjectSetInteger(0, nameLine, OBJPROP_RAY_LEFT, false);
+         ObjectSetInteger(0, nameLine, OBJPROP_RAY_RIGHT, false);
+         ObjectSetInteger(0, nameLine, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, nameLine, OBJPROP_HIDDEN, false);
+      }
+      else
+      {
+         ObjectMove(0, nameLine, 0, tA, pA);
+         ObjectMove(0, nameLine, 1, tB, pA);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| VISUAL: DELETE & DRAW                                            |
 //+------------------------------------------------------------------+
 
@@ -575,6 +614,8 @@ void DrawMarketElements()
    ulong currentSig = ComputeVisualSignature();
    int htfCount = ArraySize(g_structure_HTF.points);
    int intCount = ArraySize(g_structure_INT.points);
+   int htfBreakouts = ArraySize(g_breakouts_HTF);
+   int intBreakouts = ArraySize(g_breakouts_INT);
 
    if(g_lastVisualSig == currentSig && g_lastHTFCount == htfCount && g_lastINTCount == intCount)
       return; // Nothing changed, skip redraw
@@ -590,7 +631,7 @@ void DrawMarketElements()
    string infoName = prefix + "Info";
    if(ObjectCreate(0, infoName, OBJ_LABEL, 0, 0, 0))
    {
-      string info = "HTF: " + IntegerToString(htfCount) + " | INT: " + IntegerToString(intCount);
+      string info = "HTF: " + IntegerToString(htfCount) + " pts | INT: " + IntegerToString(intCount) + " pts | HTF-BO: " + IntegerToString(htfBreakouts) + " | INT-BO: " + IntegerToString(intBreakouts);
       ObjectSetString(0, infoName, OBJPROP_TEXT, info);
       ObjectSetInteger(0, infoName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, infoName, OBJPROP_FONTSIZE, Default_Font_Size + 2);
@@ -668,6 +709,13 @@ void DrawMarketElements()
          }
       }
    }
+
+   // Draw breakout lines
+   if(ShowBreakoutLines && htfBreakouts > 0)
+      DrawBreakoutLines(g_breakouts_HTF, g_structure_HTF, prefix + "HTF_BO_", BreakoutLineColor, BreakoutLineStyle, BreakoutLineWidth);
+
+   if(EnableInternalStructure && Internal_ShowBreakoutLines && intBreakouts > 0)
+      DrawBreakoutLines(g_breakouts_INT, g_structure_INT, prefix + "INT_BO_", Internal_BreakoutLineColor, Internal_BreakoutLineStyle, Internal_BreakoutLineWidth);
 }
 
 //+------------------------------------------------------------------+
@@ -686,7 +734,7 @@ int OnInit()
    ArraySetAsSeries(ZigZagHigh_INT, true);
    ArraySetAsSeries(ZigZagLow_INT, true);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "SMC STRUCTURE MTF v1.5 (Optimized)");
+   IndicatorSetString(INDICATOR_SHORTNAME, "SMC STRUCTURE MTF v1.5 (Optimized + Breakouts)");
    return INIT_SUCCEEDED;
 }
 
@@ -763,6 +811,16 @@ int OnCalculate(const int rates_total, const int prev_calculated,
       }
    }
 
+   // Detect HTF breakouts FIXED: Added missing call
+   if(ShowBreakoutLines && ArraySize(g_structure_HTF.points) > 0)
+   {
+      DetectBreakouts(time, high, low, close, g_structure_HTF, g_breakouts_HTF, MaxScanBars, AllowWickBreaks);
+   }
+   else
+   {
+      ArrayResize(g_breakouts_HTF, 0);
+   }
+
    // Calculate Internal Structure
    if(EnableInternalStructure)
    {
@@ -807,6 +865,39 @@ int OnCalculate(const int rates_total, const int prev_calculated,
    {
       ArrayResize(g_structure_INT.points, 0);
       ArrayResize(g_structure_INT.labels, 0);
+      ArrayResize(g_breakouts_INT, 0);
+   }
+
+   // Detect Internal breakouts FIXED: Added missing call for Internal structure
+   if(EnableInternalStructure && Internal_ShowBreakoutLines && ArraySize(g_structure_INT.points) > 0)
+   {
+      MqlRates rates_INT[];
+      int copiedINT = CopyRates(_Symbol, Internal_TF, 0, MaxZigZagPoints_Internal * 5, rates_INT);
+      if(copiedINT > 0)
+      {
+         double high_INT[], low_INT[], close_INT[];
+         datetime time_INT[];
+         ArrayResize(high_INT, copiedINT);
+         ArrayResize(low_INT, copiedINT);
+         ArrayResize(close_INT, copiedINT);
+         ArrayResize(time_INT, copiedINT);
+         for(int i = 0; i < copiedINT; i++)
+         {
+            high_INT[i] = rates_INT[i].high;
+            low_INT[i] = rates_INT[i].low;
+            close_INT[i] = rates_INT[i].close;
+            time_INT[i] = rates_INT[i].time;
+         }
+         ArraySetAsSeries(high_INT, true);
+         ArraySetAsSeries(low_INT, true);
+         ArraySetAsSeries(close_INT, true);
+         ArraySetAsSeries(time_INT, true);
+         DetectBreakouts(time_INT, high_INT, low_INT, close_INT, g_structure_INT, g_breakouts_INT, Internal_MaxScanBars, Internal_AllowWickBreaks);
+      }
+   }
+   else
+   {
+      ArrayResize(g_breakouts_INT, 0);
    }
 
    // Draw
