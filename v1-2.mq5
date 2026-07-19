@@ -84,8 +84,14 @@ int g_minRatesTotal_HTF;
 double g_deviation_HTF;
 int g_depth_HTF, g_deviation_int_HTF, g_backstep_HTF;
 int g_fontsize, g_objwidth;
+const double LEVEL_TOLERANCE_RATIO = 0.0005;
+const double LEVEL_TOLERANCE_MIN_POINTS = 5.0;
+const double LABEL_OFFSET_RATIO = 0.0002;
+const double LABEL_OFFSET_MIN_POINTS = 15.0;
+const double MARKER_HALF_RATIO = 0.0001;
+const double MARKER_HALF_MIN_POINTS = 8.0;
 
-int FindLatestLabelSourceIndex(const SMarketStructure &structure, const string label)
+int FindMostRecentLabelSourceIndex(const SMarketStructure &structure, const string label)
 {
     int n = ArraySize(structure.labels);
     for(int i = 0; i < n; i++)
@@ -100,7 +106,7 @@ datetime FindLevelTime(const SMarketStructure &structure, double level, bool isH
     if(n == 0)
         return 0;
 
-    double adaptiveTolerance = MathMax(MathAbs(level) * 0.0005, _Point * 5.0);
+    double adaptiveTolerance = MathMax(MathAbs(level) * LEVEL_TOLERANCE_RATIO, _Point * LEVEL_TOLERANCE_MIN_POINTS);
     int bestIndex = -1;
     double bestDiff = DBL_MAX;
 
@@ -164,10 +170,10 @@ void DetectBreaks(const SMarketStructure &structure, const datetime &time[], con
     if(ArraySize(structure.points) == 0 || ArraySize(structure.labels) == 0 || rates_total < 3)
         return;
 
-    int idxHH = FindLatestLabelSourceIndex(structure, "HH");
-    int idxLL = FindLatestLabelSourceIndex(structure, "LL");
-    int idxHL = FindLatestLabelSourceIndex(structure, "HL");
-    int idxLH = FindLatestLabelSourceIndex(structure, "LH");
+    int idxHH = FindMostRecentLabelSourceIndex(structure, "HH");
+    int idxLL = FindMostRecentLabelSourceIndex(structure, "LL");
+    int idxHL = FindMostRecentLabelSourceIndex(structure, "HL");
+    int idxLH = FindMostRecentLabelSourceIndex(structure, "LH");
 
     int breakIndex = -1;
     datetime startTime = 0;
@@ -230,7 +236,7 @@ void DrawBreakEvents(const string prefix, const SBreakEvent &events[])
             ObjectSetInteger(0, lineName, OBJPROP_COLOR, eventColor);
         }
 
-        double labelOffset = MathMax(MathAbs(events[i].level) * 0.0002, _Point * 15.0);
+        double labelOffset = MathMax(MathAbs(events[i].level) * LABEL_OFFSET_RATIO, _Point * LABEL_OFFSET_MIN_POINTS);
         double labelPrice = events[i].isBullish ? (events[i].level + labelOffset) : (events[i].level - labelOffset);
         string labelText = events[i].isCHoCH ? "CHoCH" : "BOS";
 
@@ -244,7 +250,7 @@ void DrawBreakEvents(const string prefix, const SBreakEvent &events[])
             ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, events[i].isBullish ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER);
         }
 
-        double markerHalf = MathMax(MathAbs(events[i].level) * 0.0001, _Point * 8.0);
+        double markerHalf = MathMax(MathAbs(events[i].level) * MARKER_HALF_RATIO, _Point * MARKER_HALF_MIN_POINTS);
         string markerName = prefix + "_MARK_" + IntegerToString(i);
         if(ObjectCreate(0, markerName, OBJ_TREND, 0, events[i].timeBreak, events[i].level - markerHalf, events[i].timeBreak, events[i].level + markerHalf))
         {
