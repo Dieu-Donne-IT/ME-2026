@@ -91,7 +91,7 @@ const double LABEL_OFFSET_MIN_POINTS = 15.0;
 const double MARKER_HALF_RATIO = 0.0001;
 const double MARKER_HALF_MIN_POINTS = 8.0;
 
-int FindMostRecentLabelSourceIndex(const SMarketStructure &structure, const string label)
+int FindFirstLabelSourceIndex(const SMarketStructure &structure, const string label)
 {
     int n = ArraySize(structure.labels);
     for(int i = 0; i < n; i++)
@@ -139,6 +139,17 @@ void AddBreakEvent(SBreakEvent &events[], datetime timeStart, datetime timeBreak
     events[size].isCHoCH = isCHoCH;
 }
 
+datetime ResolveSourceTime(const SMarketStructure &structure, int sourceIndex, bool isHigh)
+{
+    if(sourceIndex < 0 || sourceIndex >= ArraySize(structure.points))
+        return 0;
+
+    datetime startTime = structure.points[sourceIndex].time;
+    if(startTime == 0)
+        startTime = FindLevelTime(structure, structure.points[sourceIndex].price, isHigh);
+    return startTime;
+}
+
 bool FindBreakCandleIndex(const double &close[], int rates_total, int sourceBarIndex, double level, bool breakUp, int &breakIndex)
 {
     breakIndex = -1;
@@ -147,9 +158,6 @@ bool FindBreakCandleIndex(const double &close[], int rates_total, int sourceBarI
 
     for(int i = sourceBarIndex - 1; i >= 1; i--)
     {
-        if(i + 1 >= rates_total)
-            continue;
-
         bool crossed = breakUp
                        ? (close[i] > level && close[i + 1] <= level)
                        : (close[i] < level && close[i + 1] >= level);
@@ -170,43 +178,35 @@ void DetectBreaks(const SMarketStructure &structure, const datetime &time[], con
     if(ArraySize(structure.points) == 0 || ArraySize(structure.labels) == 0 || rates_total < 3)
         return;
 
-    int idxHH = FindMostRecentLabelSourceIndex(structure, "HH");
-    int idxLL = FindMostRecentLabelSourceIndex(structure, "LL");
-    int idxHL = FindMostRecentLabelSourceIndex(structure, "HL");
-    int idxLH = FindMostRecentLabelSourceIndex(structure, "LH");
+    int idxHH = FindFirstLabelSourceIndex(structure, "HH");
+    int idxLL = FindFirstLabelSourceIndex(structure, "LL");
+    int idxHL = FindFirstLabelSourceIndex(structure, "HL");
+    int idxLH = FindFirstLabelSourceIndex(structure, "LH");
 
     int breakIndex = -1;
     datetime startTime = 0;
 
     if(idxHH != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxHH].index, structure.points[idxHH].price, true, breakIndex))
     {
-        startTime = structure.points[idxHH].time;
-        if(startTime == 0)
-            startTime = FindLevelTime(structure, structure.points[idxHH].price, true);
+        startTime = ResolveSourceTime(structure, idxHH, true);
         AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxHH].price, true, false);
     }
 
     if(idxLL != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxLL].index, structure.points[idxLL].price, false, breakIndex))
     {
-        startTime = structure.points[idxLL].time;
-        if(startTime == 0)
-            startTime = FindLevelTime(structure, structure.points[idxLL].price, false);
+        startTime = ResolveSourceTime(structure, idxLL, false);
         AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxLL].price, false, false);
     }
 
     if(idxHL != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxHL].index, structure.points[idxHL].price, false, breakIndex))
     {
-        startTime = structure.points[idxHL].time;
-        if(startTime == 0)
-            startTime = FindLevelTime(structure, structure.points[idxHL].price, false);
+        startTime = ResolveSourceTime(structure, idxHL, false);
         AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxHL].price, false, true);
     }
 
     if(idxLH != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxLH].index, structure.points[idxLH].price, true, breakIndex))
     {
-        startTime = structure.points[idxLH].time;
-        if(startTime == 0)
-            startTime = FindLevelTime(structure, structure.points[idxLH].price, true);
+        startTime = ResolveSourceTime(structure, idxLH, true);
         AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxLH].price, true, true);
     }
 }
