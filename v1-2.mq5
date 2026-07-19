@@ -25,6 +25,15 @@ struct SMarketStructure
     int          trend;
 };
 
+struct SBreakEvent
+{
+    datetime timeStart;
+    datetime timeBreak;
+    double   level;
+    bool     isBullish;
+    bool     isCHoCH;
+};
+
 input group "═══ PARAMÈTRES ZIGZAG HTF ═══"
 input int InpDepthHTF        = 34;
 input int InpDeviationHTF    = 5;
@@ -68,11 +77,185 @@ double ZigZagHigh_HTF[], ZigZagLow_HTF[];
 double ZigZagHigh_LTF[], ZigZagLow_LTF[];
 SMarketStructure g_structure_HTF;
 SMarketStructure g_structure_LTF;
+SBreakEvent g_breaks_HTF[];
+SBreakEvent g_breaks_LTF[];
 
 int g_minRatesTotal_HTF;
 double g_deviation_HTF;
 int g_depth_HTF, g_deviation_int_HTF, g_backstep_HTF;
 int g_fontsize, g_objwidth;
+
+int FindLatestLabelSourceIndex(const SMarketStructure &structure, const string label)
+{
+    int n = ArraySize(structure.labels);
+    for(int i = 0; i < n; i++)
+        if(structure.labels[i] == label)
+            return i;
+    return -1;
+}
+
+datetime FindLevelTime(const SMarketStructure &structure, double level, bool isHigh)
+{
+    int n = ArraySize(structure.points);
+    if(n == 0)
+        return 0;
+
+    double adaptiveTolerance = MathMax(MathAbs(level) * 0.0005, _Point * 5.0);
+    int bestIndex = -1;
+    double bestDiff = DBL_MAX;
+
+    for(int i = 0; i < n; i++)
+    {
+        if(structure.points[i].isHigh != isHigh)
+            continue;
+
+        double diff = MathAbs(structure.points[i].price - level);
+        if(diff <= adaptiveTolerance && diff < bestDiff)
+        {
+            bestDiff = diff;
+            bestIndex = i;
+        }
+    }
+
+    if(bestIndex == -1)
+        return 0;
+    return structure.points[bestIndex].time;
+}
+
+void AddBreakEvent(SBreakEvent &events[], datetime timeStart, datetime timeBreak, double level, bool isBullish, bool isCHoCH)
+{
+    int size = ArraySize(events);
+    ArrayResize(events, size + 1);
+    events[size].timeStart = timeStart;
+    events[size].timeBreak = timeBreak;
+    events[size].level = level;
+    events[size].isBullish = isBullish;
+    events[size].isCHoCH = isCHoCH;
+}
+
+bool FindBreakCandleIndex(const double &close[], int rates_total, int sourceBarIndex, double level, bool breakUp, int &breakIndex)
+{
+    breakIndex = -1;
+    if(sourceBarIndex <= 1 || sourceBarIndex >= rates_total)
+        return false;
+
+    for(int i = sourceBarIndex - 1; i >= 1; i--)
+    {
+        if(i + 1 >= rates_total)
+            continue;
+
+        bool crossed = breakUp
+                       ? (close[i] > level && close[i + 1] <= level)
+                       : (close[i] < level && close[i + 1] >= level);
+
+        if(crossed)
+        {
+            breakIndex = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+void DetectBreaks(const SMarketStructure &structure, const datetime &time[], const double &close[], int rates_total, SBreakEvent &events[])
+{
+    ArrayResize(events, 0);
+
+    if(ArraySize(structure.points) == 0 || ArraySize(structure.labels) == 0 || rates_total < 3)
+        return;
+
+    int idxHH = FindLatestLabelSourceIndex(structure, "HH");
+    int idxLL = FindLatestLabelSourceIndex(structure, "LL");
+    int idxHL = FindLatestLabelSourceIndex(structure, "HL");
+    int idxLH = FindLatestLabelSourceIndex(structure, "LH");
+
+    int breakIndex = -1;
+    datetime startTime = 0;
+
+    if(idxHH != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxHH].index, structure.points[idxHH].price, true, breakIndex))
+    {
+        startTime = structure.points[idxHH].time;
+        if(startTime == 0)
+            startTime = FindLevelTime(structure, structure.points[idxHH].price, true);
+        AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxHH].price, true, false);
+    }
+
+    if(idxLL != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxLL].index, structure.points[idxLL].price, false, breakIndex))
+    {
+        startTime = structure.points[idxLL].time;
+        if(startTime == 0)
+            startTime = FindLevelTime(structure, structure.points[idxLL].price, false);
+        AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxLL].price, false, false);
+    }
+
+    if(idxHL != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxHL].index, structure.points[idxHL].price, false, breakIndex))
+    {
+        startTime = structure.points[idxHL].time;
+        if(startTime == 0)
+            startTime = FindLevelTime(structure, structure.points[idxHL].price, false);
+        AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxHL].price, false, true);
+    }
+
+    if(idxLH != -1 && FindBreakCandleIndex(close, rates_total, structure.points[idxLH].index, structure.points[idxLH].price, true, breakIndex))
+    {
+        startTime = structure.points[idxLH].time;
+        if(startTime == 0)
+            startTime = FindLevelTime(structure, structure.points[idxLH].price, true);
+        AddBreakEvent(events, startTime, time[breakIndex], structure.points[idxLH].price, true, true);
+    }
+}
+
+void DrawBreakEvents(const string prefix, const SBreakEvent &events[])
+{
+    int count = ArraySize(events);
+    for(int i = 0; i < count; i++)
+    {
+        if(events[i].timeStart == 0 || events[i].timeBreak == 0 || events[i].timeStart >= events[i].timeBreak)
+            continue;
+
+        color eventColor = events[i].isCHoCH
+                           ? (events[i].isBullish ? clrLimeGreen : clrOrangeRed)
+                           : (events[i].isBullish ? clrDodgerBlue : clrTomato);
+
+        int lineStyle = events[i].isCHoCH ? STYLE_SOLID : STYLE_DOT;
+        int lineWidth = events[i].isCHoCH ? 2 : 1;
+
+        string lineName = prefix + "_LINE_" + IntegerToString(i);
+        if(ObjectCreate(0, lineName, OBJ_TREND, 0, events[i].timeStart, events[i].level, events[i].timeBreak, events[i].level))
+        {
+            ObjectSetInteger(0, lineName, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, lineName, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, lineName, OBJPROP_STYLE, lineStyle);
+            ObjectSetInteger(0, lineName, OBJPROP_WIDTH, lineWidth);
+            ObjectSetInteger(0, lineName, OBJPROP_COLOR, eventColor);
+        }
+
+        double labelOffset = MathMax(MathAbs(events[i].level) * 0.0002, _Point * 15.0);
+        double labelPrice = events[i].isBullish ? (events[i].level + labelOffset) : (events[i].level - labelOffset);
+        string labelText = events[i].isCHoCH ? "CHoCH" : "BOS";
+
+        string labelName = prefix + "_TEXT_" + IntegerToString(i);
+        if(ObjectCreate(0, labelName, OBJ_TEXT, 0, events[i].timeBreak, labelPrice))
+        {
+            ObjectSetString(0, labelName, OBJPROP_TEXT, labelText);
+            ObjectSetInteger(0, labelName, OBJPROP_COLOR, eventColor);
+            ObjectSetString(0, labelName, OBJPROP_FONT, Default_Font);
+            ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, Default_Font_Size);
+            ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, events[i].isBullish ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER);
+        }
+
+        double markerHalf = MathMax(MathAbs(events[i].level) * 0.0001, _Point * 8.0);
+        string markerName = prefix + "_MARK_" + IntegerToString(i);
+        if(ObjectCreate(0, markerName, OBJ_TREND, 0, events[i].timeBreak, events[i].level - markerHalf, events[i].timeBreak, events[i].level + markerHalf))
+        {
+            ObjectSetInteger(0, markerName, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, markerName, OBJPROP_RAY_LEFT, false);
+            ObjectSetInteger(0, markerName, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetInteger(0, markerName, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, markerName, OBJPROP_COLOR, eventColor);
+        }
+    }
+}
 
 string GetTimeFrameName(ENUM_TIMEFRAMES timeframe)
 {
@@ -143,6 +326,7 @@ int OnCalculate(const int rates_total,
     CalculateZigZagWithParams(high, low, rates_total, ZigZagHigh_HTF, ZigZagLow_HTF,
                               g_depth_HTF, g_deviation_HTF, g_backstep_HTF);
     UpdateMarketStructure(time, high, low, close, rates_total, g_structure_HTF, ZigZagHigh_HTF, ZigZagLow_HTF);
+    DetectBreaks(g_structure_HTF, time, close, rates_total, g_breaks_HTF);
 
     // LTF (TF séparé) avec paramètres LTF
     if(EnableMultiTF)
@@ -179,6 +363,7 @@ int OnCalculate(const int rates_total,
                                           InpDepthLTF, deviationLTF, InpBackstepLTF);
                 UpdateMarketStructure(time_LTF, high_LTF, low_LTF, close_LTF, copied,
                                       g_structure_LTF, ZigZagHigh_LTF, ZigZagLow_LTF);
+                DetectBreaks(g_structure_LTF, time_LTF, close_LTF, copied, g_breaks_LTF);
             }
             else
             {
@@ -187,6 +372,7 @@ int OnCalculate(const int rates_total,
                 ArrayResize(g_structure_LTF.points, 0);
                 ArrayResize(g_structure_LTF.labels, 0);
                 g_structure_LTF.trend = 0;
+                ArrayResize(g_breaks_LTF, 0);
             }
         }
         else
@@ -196,6 +382,7 @@ int OnCalculate(const int rates_total,
             ArrayResize(g_structure_LTF.points, 0);
             ArrayResize(g_structure_LTF.labels, 0);
             g_structure_LTF.trend = 0;
+            ArrayResize(g_breaks_LTF, 0);
         }
     }
     else
@@ -205,6 +392,7 @@ int OnCalculate(const int rates_total,
         ArrayResize(g_structure_LTF.points, 0);
         ArrayResize(g_structure_LTF.labels, 0);
         g_structure_LTF.trend = 0;
+        ArrayResize(g_breaks_LTF, 0);
     }
 
     DrawMarketElements();
@@ -475,6 +663,12 @@ void DrawMarketElements()
             }
         }
     }
+
+    if(ArraySize(g_breaks_HTF) > 0)
+        DrawBreakEvents(prefix + "HTF_BREAK", g_breaks_HTF);
+
+    if(EnableMultiTF && ShowLTF && ArraySize(g_breaks_LTF) > 0)
+        DrawBreakEvents(prefix + "LTF_BREAK", g_breaks_LTF);
 
     string trendHTF = "Neutre";
     if(g_structure_HTF.trend == 1) trendHTF = "Bullish";
